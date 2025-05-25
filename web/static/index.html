@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carcassonne WebSocket Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .button:hover { background-color: #0056b3; }
+        .button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        input, select {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .rooms-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 10px;
+        }
+        .room-card {
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+        .game-board {
+            display: grid;
+            grid-template-columns: repeat(10, 40px);
+            gap: 1px;
+            margin: 20px 0;
+        }
+        .tile {
+            width: 40px;
+            height: 40px;
+            border: 1px solid #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            background-color: #fff;
+        }
+        .tile.placed { background-color: #e7f3ff; }
+    </style>
+</head>
+<body>
+    <h1>Carcassonne WebSocket Client</h1>
+    
+    <div class="container">
+        <h2>Connection</h2>
+        <div id="status" class="status disconnected">Disconnected</div>
+        <div>
+            <input type="text" id="playerName" placeholder="Player Name" value="Player1">
+            <input type="text" id="playerColor" placeholder="Color" value="red">
+            <button class="button" onclick="connect()">Connect</button>
+            <button class="button" onclick="disconnect()">Disconnect</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Rooms</h2>
+        <div>
+            <input type="text" id="roomName" placeholder="Room Name" value="Test Room">
+            <input type="number" id="maxPlayers" placeholder="Max Players" value="4" min="2" max="5">
+            <button class="button" onclick="createRoom()">Create Room</button>
+            <button class="button" onclick="listRooms()">Refresh Rooms</button>
+        </div>
+        <div id="roomsList" class="rooms-list"></div>
+    </div>
+
+    <div class="container">
+        <h2>Game Actions</h2>
+        <div>
+            <input type="text" id="botName" placeholder="Bot Name" value="Bot1">
+            <select id="botDifficulty">
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+            </select>
+            <button class="button" onclick="addBot()">Add Bot</button>
+            <button class="button" onclick="startGame()">Start Game</button>
+        </div>
+        <div id="gameBoard" class="game-board"></div>
+    </div>
+
+    <div class="container">
+        <h2>Message Log</h2>
+        <div id="log" class="log"></div>
+        <button class="button" onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <script>
+        let ws = null;
+        let playerId = null;
+        let currentRoom = null;
+        let gameState = null;
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('status');
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusDiv.textContent = 'Connected';
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusDiv.textContent = 'Disconnected';
+            }
+        }
+
+        function connect() {
+            if (ws) {
+                ws.close();
+            }
+
+            const playerName = document.getElementById('playerName').value;
+            const playerColor = document.getElementById('playerColor').value;
+            
+            if (!playerName || !playerColor) {
+                alert('Please enter player name and color');
+                return;
+            }
+
+            playerId = 'player_' + Math.random().toString(36).substr(2, 9);
+            
+            ws = new WebSocket('ws://localhost:8080/ws');
+            
+            ws.onopen = function() {
+                updateStatus(true);
+                log('Connected to server');
+                
+                // Send connect message
+                sendMessage('CONNECT', {
+                    playerId: playerId,
+                    name: playerName,
+                    color: playerColor
+                });
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                log(`Received: ${message.type} - ${JSON.stringify(message.data)}`);
+                handleMessage(message);
+            };
+            
+            ws.onclose = function() {
+                updateStatus(false);
+                log('Disconnected from server');
+            };
+            
+            ws.onerror = function(error) {
+                log(`Error: ${error}`);
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendMessage(type, data) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('Not connected to server');
+                return;
+            }
+            
+            const message = {
+                type: type,
+                data: data,
+                timestamp: new Date().toISOString(),
+                messageId: 'msg_' + Math.random().toString(36).substr(2, 9)
+            };
+            
+            ws.send(JSON.stringify(message));
+            log(`Sent: ${type} - ${JSON.stringify(data)}`);
+        }
+
+        function handleMessage(message) {
+            switch (message.type) {
+                case 'LIST_ROOMS':
+                    displayRooms(message.data.rooms);
+                    break;
+                case 'ROOM_STATE':
+                    currentRoom = message.data.roomId;
+                    log(`Joined room: ${currentRoom}`);
+                    break;
+                case 'GAME_STATE':
+                    gameState = message.data.gameState;
+                    displayGameBoard();
+                    break;
+                case 'TURN_START':
+                    log(`Turn started for player: ${message.data.currentPlayer}`);
+                    break;
+                case 'ERROR':
+                    log(`Error: ${message.data.message}`);
+                    break;
+            }
+        }
+
+        function createRoom() {
+            const roomName = document.getElementById('roomName').value;
+            const maxPlayers = parseInt(document.getElementById('maxPlayers').value);
+            
+            sendMessage('CREATE_ROOM', {
+                roomName: roomName,
+                maxPlayers: maxPlayers
+            });
+        }
+
+        function listRooms() {
+            sendMessage('LIST_ROOMS', {});
+        }
+
+        function joinRoom(roomId) {
+            sendMessage('JOIN_ROOM', {
+                roomId: roomId
+            });
+        }
+
+        function addBot() {
+            const botName = document.getElementById('botName').value;
+            const difficulty = document.getElementById('botDifficulty').value;
+            
+            sendMessage('ADD_BOT', {
+                botName: botName,
+                difficulty: difficulty
+            });
+        }
+
+        function startGame() {
+            // This would typically be handled through WebSocket messages
+            // For now, just log the action
+            log('Start game requested');
+        }
+
+        function displayRooms(rooms) {
+            const roomsList = document.getElementById('roomsList');
+            roomsList.innerHTML = '';
+            
+            rooms.forEach(room => {
+                const roomCard = document.createElement('div');
+                roomCard.className = 'room-card';
+                roomCard.innerHTML = `
+                    <h4>${room.name}</h4>
+                    <p>Players: ${room.playerCount}/${room.maxPlayers}</p>
+                    <p>Status: ${room.gameStarted ? 'In Game' : 'Waiting'}</p>
+                    <button class="button" onclick="joinRoom('${room.id}')" 
+                            ${room.gameStarted || room.playerCount >= room.maxPlayers ? 'disabled' : ''}>
+                        Join Room
+                    </button>
+                `;
+                roomsList.appendChild(roomCard);
+            });
+        }
+
+        function displayGameBoard() {
+            if (!gameState) return;
+            
+            const boardDiv = document.getElementById('gameBoard');
+            boardDiv.innerHTML = '';
+            
+            // Simple board visualization
+            for (let y = -5; y <= 5; y++) {
+                for (let x = -5; x <= 5; x++) {
+                    const tile = document.createElement('div');
+                    tile.className = 'tile';
+                    
+                    // Check if there's a tile at this position
+                    const position = `${x},${y}`;
+                    if (gameState.tiles && gameState.tiles[position]) {
+                        tile.className += ' placed';
+                        tile.textContent = 'T';
+                    }
+                    
+                    boardDiv.appendChild(tile);
+                }
+            }
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Auto-connect on page load for testing
+        window.onload = function() {
+            // Uncomment to auto-connect
+            // connect();
+        };
+    </script>
+</body>
+</html>
