@@ -80,6 +80,17 @@
             background-color: #fff;
         }
         .tile.placed { background-color: #e7f3ff; }
+        .latency-info {
+            background-color: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .latency-good { color: #28a745; }
+        .latency-medium { color: #ffc107; }
+        .latency-bad { color: #dc3545; }
     </style>
 </head>
 <body>
@@ -88,11 +99,17 @@
     <div class="container">
         <h2>Connection</h2>
         <div id="status" class="status disconnected">Disconnected</div>
+        <div id="latencyInfo" class="latency-info" style="display: none;">
+            <div>Latency: <span id="latencyValue">-</span></div>
+            <div>Client ID: <span id="clientId">-</span></div>
+            <div>Ping Count: <span id="pingCount">0</span></div>
+        </div>
         <div>
             <input type="text" id="playerName" placeholder="Player Name" value="Player1">
             <input type="text" id="playerColor" placeholder="Color" value="red">
             <button class="button" onclick="connect()">Connect</button>
             <button class="button" onclick="disconnect()">Disconnect</button>
+            <button class="button" onclick="sendPing()" id="pingButton" disabled>Send Ping</button>
         </div>
     </div>
 
@@ -133,6 +150,9 @@
         let playerId = null;
         let currentRoom = null;
         let gameState = null;
+        let clientId = null;
+        let pingCount = 0;
+        let pendingPings = new Map(); // Track pending pings for latency calculation
 
         function log(message) {
             const logDiv = document.getElementById('log');
@@ -143,12 +163,80 @@
 
         function updateStatus(connected) {
             const statusDiv = document.getElementById('status');
+            const latencyDiv = document.getElementById('latencyInfo');
+            const pingButton = document.getElementById('pingButton');
+            
             if (connected) {
                 statusDiv.className = 'status connected';
                 statusDiv.textContent = 'Connected';
+                latencyDiv.style.display = 'block';
+                pingButton.disabled = false;
             } else {
                 statusDiv.className = 'status disconnected';
                 statusDiv.textContent = 'Disconnected';
+                latencyDiv.style.display = 'none';
+                pingButton.disabled = true;
+                pendingPings.clear();
+            }
+        }
+
+        function updateLatencyDisplay(latencyMs) {
+            const latencyValue = document.getElementById('latencyValue');
+            const latencyClass = latencyMs < 50 ? 'latency-good' : 
+                                latencyMs < 150 ? 'latency-medium' : 'latency-bad';
+            
+            latencyValue.textContent = `${latencyMs.toFixed(1)}ms`;
+            latencyValue.className = latencyClass;
+            
+            document.getElementById('pingCount').textContent = pingCount;
+        }
+
+        function generateMessageId() {
+            return 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        function sendPing() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('Cannot send ping - not connected');
+                return;
+            }
+
+            const timestamp = Date.now() * 1000000; // Convert to nanoseconds
+            const messageId = generateMessageId();
+            
+            // Store ping timestamp for latency calculation
+            pendingPings.set(messageId, timestamp);
+            
+            const message = {
+                type: 'PING',
+                data: {
+                    timestamp: timestamp,
+                    clientId: clientId || 'unknown'
+                },
+                timestamp: new Date().toISOString(),
+                messageId: messageId
+            };
+            
+            ws.send(JSON.stringify(message));
+            log(`Sent PING with timestamp: ${timestamp}`);
+        }
+
+        function handlePong(message) {
+            const data = message.data;
+            const receiveTime = Date.now() * 1000000; // Convert to nanoseconds
+            
+            // Calculate latency
+            const latencyNs = receiveTime - data.pingTimestamp;
+            const latencyMs = latencyNs / 1000000; // Convert back to milliseconds
+            
+            pingCount++;
+            updateLatencyDisplay(latencyMs);
+            
+            log(`Received PONG - Latency: ${latencyMs.toFixed(1)}ms`);
+            
+            // Clean up pending ping if it exists
+            if (pendingPings.has(message.messageId)) {
+                pendingPings.delete(message.messageId);
             }
         }
 
@@ -166,6 +254,9 @@
             }
 
             playerId = 'player_' + Math.random().toString(36).substr(2, 9);
+            clientId = 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+            
+            document.getElementById('clientId').textContent = clientId;
             
             ws = new WebSocket('ws://localhost:8080/ws');
             
@@ -179,6 +270,9 @@
                     name: playerName,
                     color: playerColor
                 });
+                
+                // Send initial ping
+                setTimeout(sendPing, 1000);
             };
             
             ws.onmessage = function(event) {
@@ -214,7 +308,7 @@
                 type: type,
                 data: data,
                 timestamp: new Date().toISOString(),
-                messageId: 'msg_' + Math.random().toString(36).substr(2, 9)
+                messageId: generateMessageId()
             };
             
             ws.send(JSON.stringify(message));
@@ -236,6 +330,9 @@
                     break;
                 case 'TURN_START':
                     log(`Turn started for player: ${message.data.currentPlayer}`);
+                    break;
+                case 'PONG':
+                    handlePong(message);
                     break;
                 case 'ERROR':
                     log(`Error: ${message.data.message}`);
@@ -326,6 +423,13 @@
         function clearLog() {
             document.getElementById('log').innerHTML = '';
         }
+
+        // Auto-ping every 10 seconds when connected
+        setInterval(function() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                sendPing();
+            }
+        }, 10000);
 
         // Auto-connect on page load for testing
         window.onload = function() {

@@ -32,6 +32,10 @@ const (
 	MessageGameState   MessageType = "GAME_STATE"
 	MessagePlayerUpdate MessageType = "PLAYER_UPDATE"
 	
+	// System Messages
+	MessagePing  MessageType = "PING"
+	MessagePong  MessageType = "PONG"
+	
 	// Error handling
 	MessageError MessageType = "ERROR"
 )
@@ -157,6 +161,19 @@ type BotMoveData struct {
 	Move  player.BotMove   `json:"move"`
 }
 
+// PingData represents ping message data for latency calculation
+type PingData struct {
+	Timestamp int64  `json:"timestamp"`
+	ClientID  string `json:"clientId,omitempty"`
+}
+
+// PongData represents pong response message data
+type PongData struct {
+	PingTimestamp int64 `json:"pingTimestamp"`
+	PongTimestamp int64 `json:"pongTimestamp"`
+	ClientID      string `json:"clientId,omitempty"`
+}
+
 // CreateMessage creates a new message with the given type and data
 func CreateMessage(msgType MessageType, data interface{}) (*Message, error) {
 	dataBytes, err := json.Marshal(data)
@@ -250,5 +267,22 @@ func NewTurnStartMessage(currentPlayer string, currentTile *game.Tile, validPlac
 		CurrentPlayer:   currentPlayer,
 		CurrentTile:     currentTile,
 		ValidPlacements: validPlacements,
+	})
+}
+
+// NewPingMessage creates a new ping message for latency measurement
+func NewPingMessage(clientID string) (*Message, error) {
+	return CreateMessage(MessagePing, PingData{
+		Timestamp: time.Now().UnixNano(),
+		ClientID:  clientID,
+	})
+}
+
+// NewPongMessage creates a new pong response message
+func NewPongMessage(pingTimestamp int64, clientID string) (*Message, error) {
+	return CreateMessage(MessagePong, PongData{
+		PingTimestamp: pingTimestamp,
+		PongTimestamp: time.Now().UnixNano(),
+		ClientID:      clientID,
 	})
 }

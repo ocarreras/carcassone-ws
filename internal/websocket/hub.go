@@ -1,10 +1,10 @@
 package websocket
 
 import (
-	"log"
-	"time"
 	"carcassonne-ws/internal/game"
 	"carcassonne-ws/internal/room"
+	"log"
+	"time"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to the clients
@@ -79,6 +79,7 @@ func (h *Hub) Run() {
 
 // handleMessage handles incoming messages from clients
 func (h *Hub) handleMessage(client *Client, msg *Message) {
+	log.Printf("Handling : %s", msg.Type)
 	switch msg.Type {
 	case MessageConnect:
 		h.handleConnect(client, msg)
@@ -96,7 +97,10 @@ func (h *Hub) handleMessage(client *Client, msg *Message) {
 		h.handlePlaceTile(client, msg)
 	case MessagePlaceMeeple:
 		h.handlePlaceMeeple(client, msg)
+	case MessagePing:
+		h.handlePing(client, msg)
 	default:
+		log.Printf("Invalid message  : %s", msg.Type)
 		client.SendError("UNKNOWN_MESSAGE", "Unknown message type")
 	}
 }
@@ -314,6 +318,27 @@ func (h *Hub) handlePlaceMeeple(client *Client, msg *Message) {
 	room.NextTurn()
 	h.broadcastGameState(client.RoomID)
 	h.sendTurnStart(client.RoomID)
+}
+
+// handlePing handles ping messages for latency calculation
+func (h *Hub) handlePing(client *Client, msg *Message) {
+	var data PingData
+	if err := ParseMessage(msg, &data); err != nil {
+		client.SendError("INVALID_DATA", "Invalid ping data")
+		return
+	}
+	
+	// Create pong response with original timestamp
+	pongMsg, err := NewPongMessage(data.Timestamp, data.ClientID)
+	if err != nil {
+		log.Printf("Error creating pong message: %v", err)
+		return
+	}
+	
+	// Send pong response back to client
+	client.SendMessage(pongMsg)
+	
+	log.Printf("Ping/Pong: Client %s latency measurement", data.ClientID)
 }
 
 // sendRoomState sends room state to a specific client

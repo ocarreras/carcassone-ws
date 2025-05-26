@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 	"carcassonne-ws/internal/game"
 	"github.com/gorilla/websocket"
@@ -21,6 +22,9 @@ const (
 	
 	// Maximum message size allowed from peer
 	maxMessageSize = 512
+	
+	// Latency ping interval for custom ping/pong
+	latencyPingInterval = 30 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -49,15 +53,59 @@ type Client struct {
 	
 	// Current room ID
 	RoomID string
+	
+	// Latency tracking
+	latency      time.Duration
+	lastPingTime time.Time
+	latencyMutex sync.RWMutex
+	
+	// Client ID for ping/pong tracking
+	clientID string
 }
 
 // NewClient creates a new WebSocket client
 func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 	return &Client{
-		conn: conn,
-		send: make(chan []byte, 256),
-		hub:  hub,
+		conn:     conn,
+		send:     make(chan []byte, 256),
+		hub:      hub,
+		clientID: generateClientID(),
 	}
+}
+
+// generateClientID generates a unique client ID
+func generateClientID() string {
+	return "client_" + time.Now().Format("20060102150405") + "_" + randomString(8)
+}
+
+// GetLatency returns the current latency
+func (c *Client) GetLatency() time.Duration {
+	c.latencyMutex.RLock()
+	defer c.latencyMutex.RUnlock()
+	return c.latency
+}
+
+// updateLatency updates the latency measurement
+func (c *Client) updateLatency(pingTimestamp, pongTimestamp int64) {
+	c.latencyMutex.Lock()
+	defer c.latencyMutex.Unlock()
+	
+	latency := time.Duration(pongTimestamp - pingTimestamp)
+	c.latency = latency
+	
+	log.Printf("Client %s latency: %v", c.clientID, latency)
+}
+
+// sendLatencyPing sends a custom ping message for latency measurement
+func (c *Client) sendLatencyPing() {
+	pingMsg, err := NewPingMessage(c.clientID)
+	if err != nil {
+		log.Printf("Error creating ping message: %v", err)
+		return
+	}
+	
+	c.lastPingTime = time.Now()
+	c.SendMessage(pingMsg)
 }
 
 // readPump pumps messages from the websocket connection to the hub
@@ -89,16 +137,36 @@ func (c *Client) readPump() {
 			continue
 		}
 		
+		// Handle pong messages for latency calculation
+		if msg.Type == MessagePong {
+			c.handlePongMessage(&msg)
+			continue
+		}
+		
 		// Handle the message
 		c.hub.handleMessage(c, &msg)
 	}
 }
 
+// handlePongMessage handles pong messages for latency calculation
+func (c *Client) handlePongMessage(msg *Message) {
+	var data PongData
+	if err := ParseMessage(msg, &data); err != nil {
+		log.Printf("Error parsing pong message: %v", err)
+		return
+	}
+	
+	// Calculate latency
+	c.updateLatency(data.PingTimestamp, data.PongTimestamp)
+}
+
 // writePump pumps messages from the hub to the websocket connection
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
+	latencyTicker := time.NewTicker(latencyPingInterval)
 	defer func() {
 		ticker.Stop()
+		latencyTicker.Stop()
 		c.conn.Close()
 	}()
 	
@@ -130,10 +198,15 @@ func (c *Client) writePump() {
 			}
 			
 		case <-ticker.C:
+			// Standard WebSocket ping for connection keepalive
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+			
+		case <-latencyTicker.C:
+			// Custom ping for latency measurement
+			c.sendLatencyPing()
 		}
 	}
 }
@@ -166,6 +239,25 @@ func (c *Client) SendError(code, message string) {
 	c.SendMessage(errorMsg)
 }
 
+// GetClientID returns the client ID
+func (c *Client) GetClientID() string {
+	return c.clientID
+}
+
+// GetLatencyStats returns latency statistics
+func (c *Client) GetLatencyStats() map[string]interface{} {
+	c.latencyMutex.RLock()
+	defer c.latencyMutex.RUnlock()
+	
+	return map[string]interface{}{
+		"clientId":        c.clientID,
+		"latency":         c.latency.String(),
+		"latencyMs":       float64(c.latency.Nanoseconds()) / 1e6,
+		"lastPingTime":    c.lastPingTime,
+		"connectionTime":  time.Since(c.lastPingTime),
+	}
+}
+
 // Close closes the client connection
 func (c *Client) Close() {
 	close(c.send)
@@ -181,6 +273,8 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	
 	client := NewClient(hub, conn)
 	client.hub.register <- client
+	
+	log.Printf("New WebSocket connection established: %s", client.clientID)
 	
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines
